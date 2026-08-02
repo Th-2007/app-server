@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FILEBOX — Gestor de archivos</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Archivo:wght@400;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" type="text/css" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <div class="terminal-header">
+    <div class="barcode-strip"></div>
+    <div class="scan-line"></div>
+    <div class="header-row">
+      <div class="brand">
+        <div class="brand-mark">||I</div>
+        <div>
+          <h1>FILEBOX</h1>
+          <div class="subtitle">gestor de archivos · guarda, edita, sube y descarga tus archivos</div>
+        </div>
+      </div>
+    </div>
+    <div class="readout">
+      <div class="readout-item">ARCHIVOS<b id="stat-count">0</b></div>
+      <div class="readout-item">ESPACIO USADO<b id="stat-size">0 KB</b></div>
+      <div class="readout-item">ESTADO<b id="stat-status" style="color:var(--yellow)">CARGANDO…</b></div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button class="btn-scan" id="upload-btn">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 8l5-5 5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+      SUBIR ARCHIVOS
+    </button>
+    <button class="btn-scan" id="new-file-btn">
+      📄 CREAR ARCHIVO
+    </button>
+    <div class="search-wrap">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+      <input type="text" id="search-input" placeholder="Buscar por nombre…">
+      <button class="btn-clear-search" id="clear-search" style="display:none;">✕</button>
+    </div>
+    
+    <input type="file" id="file-input" multiple>
+  </div>
+
+  <div class="dropzone" id="dropzone">⬇ arrastra y suelta archivos aquí para guardarlos directamente</div>
+
+  <div class="bulk-bar" id="bulk-bar">
+    <span id="bulk-count">0 seleccionados</span>
+    <div class="bulk-actions">
+      <button class="bulk-download" id="bulk-download-btn">⬇ Descargar</button>
+      <button class="bulk-delete" id="bulk-delete-btn">✕ Borrar</button>
+      <button class="bulk-clear" id="bulk-clear-btn">Cancelar</button>
+    </div>
+  </div>
+
+  <div class="receipt" id="receipt">
+    <div class="receipt-head">
+      <span style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="select-all" class="row-check">NOMBRE</span><span>TIPO</span><span>TAMAÑO</span><span>FECHA</span><span></span>
+    </div>
+    <div id="list-body">
+      <div class="loading-screen">encendiendo terminal<span class="blink">_</span></div>
+    </div>
+    <div class="total-row" id="total-row" style="display:none;">
+      <span>TOTAL DE ARCHIVOS</span><b id="total-label">0</b>
+    </div>
+  </div>
+
+  <div class="hint">📁 gestor de archivos local: puedes subir, editar, descargar y borrar tus archivos</div>
+</div>
+
+<!-- Modal editar -->
+<div class="overlay" id="edit-overlay">
+  <div class="modal">
+    <h2>✎ Editar archivo</h2>
+    <div class="field">
+      <label>Nombre del archivo</label>
+      <input type="text" id="edit-name">
+    </div>
+    <div class="field" id="edit-content-field">
+      <label>Contenido</label>
+      <textarea id="edit-content"></textarea>
+    </div>
+    <div class="field readonly-note" id="edit-readonly-note" style="display:none;">
+      Este tipo de archivo no se puede editar como texto aquí. Puedes cambiar el nombre y guardar.
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="edit-cancel">Cancelar</button>
+      <button class="btn-primary" id="edit-save">Guardar cambios</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal borrar -->
+<div class="overlay" id="delete-overlay">
+  <div class="modal">
+    <h2 style="color:var(--red);">🗑 Borrar archivo</h2>
+    <p style="font-family:'Space Mono',monospace; font-size:13px; color:var(--paper);">
+      ¿Seguro que quieres borrar <b id="delete-filename" style="color:var(--yellow);"></b>? Esta acción no se puede deshacer.
+    </p>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="delete-cancel">Cancelar</button>
+      <button class="btn-danger" id="delete-confirm">Borrar</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><span class="dot"></span><span id="toast-text"></span></div>
+
+<script>
+(function(){
+  const state = { files: [], searchTerm: "", editingId: null, deletingId: null, selected: new Set() };
+  const MAX_BYTES = 100 * 1024 * 1024; // límite amplio por archivo
+
+  const TEXT_EXT = ["txt","md","csv","json","js","css","html","xml","log","yaml","yml","ts","py","java","c","cpp","sh","ini","conf"];
+
+  // ---------- helpers ----------
+  function uid(){
+    return (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2));
+  }
+  function extOf(name){
+    const parts = name.split('.');
+    return parts.length > 1 ? parts.pop().toLowerCase() : '';
+  }
+  function isTextFile(name, mime){
+    if (mime && mime.startsWith('text/')) return true;
+    if (mime === 'application/json') return true;
+    return TEXT_EXT.includes(extOf(name));
+  }
+  function fileTag(name, mime){
+    const ext = extOf(name);
+    if (mime.startsWith('image/')) return 'IMAGEN';
+    if (mime.startsWith('video/')) return 'VIDEO';
+    if (mime.startsWith('audio/')) return 'AUDIO';
+    if (ext === 'pdf') return 'PDF';
+    if (['xlsx','xls','csv'].includes(ext)) return 'HOJA';
+    if (['doc','docx'].includes(ext)) return 'DOC';
+    if (['ppt','pptx'].includes(ext)) return 'SLIDES';
+    if (TEXT_EXT.includes(ext)) return 'TEXTO';
+    if (['zip','rar','7z'].includes(ext)) return 'ZIP';
+    return (ext || 'ARCH').toUpperCase().slice(0,5);
+  }
+  function formatSize(bytes){
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+    return (bytes/(1024*1024)).toFixed(2) + ' MB';
+  }
+  function formatDate(ts){
+    const d = new Date(ts);
+    return d.toLocaleDateString('es-ES', {day:'2-digit', month:'2-digit', year:'2-digit'}) + ' ' +
+           d.toLocaleTimeString('es-ES', {hour:'2-digit', minute:'2-digit'});
+  }
+  function escapeHtml(str){
+    return str.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function utf8ToBase64(text){
+    const bytes = new TextEncoder().encode(text);
+    let binary = '';
+    bytes.forEach(b => binary += String.fromCharCode(b));
+    return btoa(binary);
+  }
+  function base64ToUtf8(b64){
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i=0;i<binary.length;i++) bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+  function toast(msg, isError){
+    const el = document.getElementById('toast');
+    document.getElementById('toast-text').textContent = msg;
+    el.classList.toggle('error', !!isError);
+    el.classList.add('show');
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.classList.remove('show'), 2600);
+  }
+
+  // ---------- storage ----------
+  async function loadFiles(){
+    try{
+      const listResult = await window.storage.list('file:', true);
+      const keys = (listResult && listResult.keys) ? listResult.keys : [];
+      const loaded = [];
+      for (const key of keys){
+        try{
+          const res = await window.storage.get(key, true);
+          if (res && res.value) loaded.push(JSON.parse(res.value));
+        }catch(e){ /* skip unreadable key */ }
+      }
+      loaded.sort((a,b) => b.dateAdded - a.dateAdded);
+      state.files = loaded;
+      document.getElementById('stat-status').textContent = 'LISTO';
+      document.getElementById('stat-status').style.color = 'var(--green)';
+    }catch(e){
+      document.getElementById('stat-status').textContent = 'SIN CONEXIÓN';
+      document.getElementById('stat-status').style.color = 'var(--red)';
+      toast('No se pudo conectar con el almacenamiento.', true);
+    }
+    render();
+  }
+
+  async function saveFileRecord(rec){
+    await window.storage.set('file:' + rec.id, JSON.stringify(rec), true);
+  }
+  async function deleteFileRecord(id){
+    await window.storage.delete('file:' + id, true);
+  }
+
+  // ---------- upload ----------
+  document.getElementById('upload-btn').addEventListener('click', () => {
+    document.getElementById('file-input').click();
+  });
+  document.getElementById('file-input').addEventListener('change', async (e) => {
+    const list = Array.from(e.target.files || []);
+    e.target.value = '';
+    await handleIncomingFiles(list);
+  });
+
+  async function handleIncomingFiles(list){
+    for (const f of list){
+      if (f.size > MAX_BYTES){
+        toast(`"${f.name}" supera el límite permitido y no se subió.`, true);
+        continue;
+      }
+      try{
+        const dataUrl = await readAsDataUrl(f);
+        const rec = {
+          id: uid(),
+          name: f.name,
+          mime: f.type || 'application/octet-stream',
+          size: f.size,
+          dateAdded: Date.now(),
+          dataUrl: dataUrl,
+          isText: isTextFile(f.name, f.type)
+        };
+        await saveFileRecord(rec);
+        state.files.unshift(rec);
+        
+        toast(`"${f.name}" guardado.`);
+      }catch(err){
+        toast(`No se pudo leer "${f.name}".`, true);
+      }
+    }
+    render();
+  }
+  function readAsDataUrl(file){
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(file);
+    });
+  }
+  function flashScan(){
+    const strip = document.querySelector('.scan-line');
+    strip.style.display = "none";
+    
+    
+  }
+
+  // ---------- drag & drop ----------
+  const dropzone = document.getElementById('dropzone');
+  ['dragenter','dragover'].forEach(evt => {
+    dropzone.addEventListener(evt, (e) => {
+      e.preventDefault(); e.stopPropagation();
+      dropzone.classList.add('drag-over');
+    });
+  });
+  ['dragleave','drop'].forEach(evt => {
+    dropzone.addEventListener(evt, (e) => {
+      e.preventDefault(); e.stopPropagation();
+      dropzone.classList.remove('drag-over');
+    });
+  });
+  dropzone.addEventListener('drop', async (e) => {
+    const dt = e.dataTransfer;
+    if (!dt || !dt.files || dt.files.length === 0) return;
+    await handleIncomingFiles(Array.from(dt.files));
+  });
+
+  // ---------- search ----------
+  const searchInput = document.getElementById('search-input');
+  const clearSearchBtn = document.getElementById('clear-search');
+  searchInput.addEventListener('input', () => {
+    state.searchTerm = searchInput.value.trim().toLowerCase();
+    clearSearchBtn.style.display = state.searchTerm ? 'block' : 'none';
+    render();
+  });
+  clearSearchBtn.addEventListener('click', () => {
+    searchInput.value = '';
+    state.searchTerm = '';
+    clearSearchBtn.style.display = 'none';
+    render();
+  });
+
+  // ---------- clear all ----------
+  document.getElementById('clear-all-btn').addEventListener('click', async () => {
+    if (state.files.length === 0) return;
+    if (!confirm('¿Vaciar toda la terminal? Se borrarán todos los archivos guardados.')) return;
+    try{
+      for (const f of state.files){
+        await deleteFileRecord(f.id);
+      }
+      state.files = [];
+      render();
+      toast('Terminal vaciada.');
+    }catch(e){
+      toast('No se pudo vaciar la terminal.', true);
+    }
+  });
+
+  // ---------- render ----------
+  function render(){
+    const body = document.getElementById('list-body');
+    const totalRow = document.getElementById('total-row');
+    const filtered = state.files.filter(f => !state.searchTerm || f.name.toLowerCase().includes(state.searchTerm));
+
+    document.getElementById('stat-count').textContent = state.files.length;
+    document.getElementById('stat-size').textContent = formatSize(state.files.reduce((s,f) => s+f.size, 0));
+
+    if (filtered.length === 0){
+      totalRow.style.display = 'none';
+      if (state.files.length === 0){
+        body.innerHTML = `
+          <div class="empty-state">
+            <div class="cart">🛒</div>
+            <b>El carrito está vacío</b>
+            escanea tu primer archivo con "SUBIR ARCHIVOS"
+          </div>`;
+      } else {
+        body.innerHTML = `
+          <div class="empty-state">
+            <div class="cart">🔎</div>
+            <b>Sin resultados</b>
+            no encontramos archivos que coincidan con "${escapeHtml(state.searchTerm)}"
+          </div>`;
+      }
+      return;
+    }
+
+    totalRow.style.display = 'flex';
+    document.getElementById('total-label').textContent = filtered.length;
+
+    body.innerHTML = filtered.map(f => `
+      <div class="file-row" data-id="${f.id}">
+        <div class="file-name">
+          <input type="checkbox" class="row-check" data-id="${f.id}" ${state.selected.has(f.id) ? 'checked' : ''}>
+          <span class="file-tag">${fileTag(f.name, f.mime)}</span>
+          <span class="fname-text" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+        </div>
+        <div class="col-center">${extOf(f.name).toUpperCase() || '—'}</div>
+        <div class="col-center">${formatSize(f.size)}</div>
+        <div class="col-center col-date">${formatDate(f.dateAdded)}</div>
+        <div class="row-actions">
+          <button class="icon-btn edit" title="Editar archivo" data-action="edit" data-id="${f.id}">📝</button>
+          <button class="icon-btn download" title="Descargar" data-action="download" data-id="${f.id}">⬇</button>
+          <button class="icon-btn delete" title="Borrar" data-action="delete" data-id="${f.id}">✕</button>
+        </div>
+      </div>
+    `).join('');
+    updateBulkBar();
+  }
+
+  function updateBulkBar(){
+    const bar = document.getElementById('bulk-bar');
+    const count = state.selected.size;
+    bar.classList.toggle('show', count > 0);
+    document.getElementById('bulk-count').textContent = count === 1 ? '1 seleccionado' : `${count} seleccionados`;
+    const selectAll = document.getElementById('select-all');
+    const visibleIds = state.files.filter(f => !state.searchTerm || f.name.toLowerCase().includes(state.searchTerm)).map(f => f.id);
+    selectAll.checked = visibleIds.length > 0 && visibleIds.every(id => state.selected.has(id));
+  }
+
+  document.getElementById('list-body').addEventListener('click', (e) => {
+    const check = e.target.closest('input.row-check');
+    if (check){
+      const id = check.dataset.id;
+      if (check.checked) state.selected.add(id); else state.selected.delete(id);
+      updateBulkBar();
+      return;
+    }
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const id = btn.dataset.id;
+    const action = btn.dataset.action;
+    if (action === 'download') downloadFile(id);
+    if (action === 'edit') openEdit(id);
+    if (action === 'delete') openDelete(id);
+  });
+
+  document.getElementById('select-all').addEventListener('change', (e) => {
+    const visible = state.files.filter(f => !state.searchTerm || f.name.toLowerCase().includes(state.searchTerm));
+    if (e.target.checked) visible.forEach(f => state.selected.add(f.id));
+    else visible.forEach(f => state.selected.delete(f.id));
+    render();
+  });
+
+  document.getElementById('bulk-clear-btn').addEventListener('click', () => {
+    state.selected.clear();
+    render();
+  });
+
+  document.getElementById('bulk-download-btn').addEventListener('click', () => {
+    const ids = Array.from(state.selected);
+    ids.forEach(id => downloadFile(id));
+    toast(`Descargando ${ids.length} archivo(s)…`);
+  });
+
+  document.getElementById('bulk-delete-btn').addEventListener('click', async () => {
+    const ids = Array.from(state.selected);
+    if (ids.length === 0) return;
+    if (!confirm(`¿Borrar ${ids.length} archivo(s) seleccionados? Esta acción no se puede deshacer.`)) return;
+    try{
+      for (const id of ids){
+        await deleteFileRecord(id);
+      }
+      state.files = state.files.filter(f => !state.selected.has(f.id));
+      state.selected.clear();
+      render();
+      toast(`${ids.length} archivo(s) borrados.`);
+    }catch(e){
+      toast('No se pudieron borrar algunos archivos.', true);
+    }
+  });
+
+  // ---------- download ----------
+  function downloadFile(id){
+    const f = state.files.find(x => x.id === id);
+    if (!f) return;
+    const a = document.createElement('a');
+    a.href = f.dataUrl;
+    a.download = f.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    toast(`Descargando "${f.name}"…`);
+  }
+
+  // ---------- edit modal ----------
+  const editOverlay = document.getElementById('edit-overlay');
+  function openEdit(id){
+    const f = state.files.find(x => x.id === id);
+    if (!f) return;
+    state.editingId = id;
+    document.getElementById('edit-name').value = f.name;
+    const contentField = document.getElementById('edit-content-field');
+    const readonlyNote = document.getElementById('edit-readonly-note');
+    const textarea = document.getElementById('edit-content');
+    if (f.isText){
+      contentField.style.display = 'block';
+      readonlyNote.style.display = 'none';
+      try{
+        const base64 = f.dataUrl.split(',')[1];
+        textarea.value = base64ToUtf8(base64);
+      }catch(e){
+        textarea.value = '';
+      }
+    } else {
+      contentField.style.display = 'none';
+      readonlyNote.style.display = 'block';
+    }
+    editOverlay.classList.add('show');
+  }
+  document.getElementById('edit-cancel').addEventListener('click', () => {
+    editOverlay.classList.remove('show');
+    state.editingId = null;
+  });
+  document.getElementById('edit-save').addEventListener('click', async () => {
+    const f = state.files.find(x => x.id === state.editingId);
+    if (!f) return;
+    const newName = document.getElementById('edit-name').value.trim();
+    if (!newName){ toast('El nombre no puede estar vacío.', true); return; }
+    f.name = newName;
+    if (f.isText){
+      const newText = document.getElementById('edit-content').value;
+      const b64 = utf8ToBase64(newText);
+      f.dataUrl = `data:${f.mime || 'text/plain'};base64,${b64}`;
+      f.size = new TextEncoder().encode(newText).length;
+    }
+    try{
+      await saveFileRecord(f);
+      editOverlay.classList.remove('show');
+      state.editingId = null;
+      render();
+      toast(`"${f.name}" actualizado.`);
+    }catch(e){
+      toast('No se pudieron guardar los cambios.', true);
+    }
+  });
+
+  // ---------- delete modal ----------
+  const deleteOverlay = document.getElementById('delete-overlay');
+  function openDelete(id){
+    const f = state.files.find(x => x.id === id);
+    if (!f) return;
+    state.deletingId = id;
+    document.getElementById('delete-filename').textContent = f.name;
+    deleteOverlay.classList.add('show');
+  }
+  document.getElementById('delete-cancel').addEventListener('click', () => {
+    deleteOverlay.classList.remove('show');
+    state.deletingId = null;
+  });
+  document.getElementById('delete-confirm').addEventListener('click', async () => {
+    const id = state.deletingId;
+    const f = state.files.find(x => x.id === id);
+    if (!f) return;
+    try{
+      await deleteFileRecord(id);
+      state.files = state.files.filter(x => x.id !== id);
+      deleteOverlay.classList.remove('show');
+      state.deletingId = null;
+      render();
+      toast(`"${f.name}" borrado.`);
+    }catch(e){
+      toast('No se pudo borrar el archivo.', true);
+    }
+  });
+
+  // close modals on backdrop click
+  [editOverlay, deleteOverlay].forEach(ov => {
+    ov.addEventListener('click', (e) => { if (e.target === ov) ov.classList.remove('show'); });
+  });
+
+  // ---------- clock ----------
+  function tickClock(){
+    document.getElementById('clock').textContent = new Date().toLocaleTimeString('es-ES');
+  }
+  tickClock();
+  setInterval(tickClock, 1000);
+
+  // ---------- init ----------
+  loadFiles();
+})();
+</script>
+</body>
+</html>
+<style>
+.btn-scan{
+    background:#2563EB !important;
+    color:white !important;
+    box-shadow:0 4px 0 #1D4ED8,0 4px 15px rgba(0,0,0,.3) !important;
+}
+.icon-btn.edit{
+    background:#2563EB !important;
+    color:white !important;
+}
+.receipt{
+    border-radius:14px !important;
+}
+.file-row:hover{
+    background:rgba(96,165,250,.08);
+}
+</style>
+
+<script>
+document.addEventListener("DOMContentLoaded",()=>{
+ const btn=document.getElementById("new-file-btn");
+ if(btn){
+  btn.addEventListener("click",()=>{
+    const name=prompt("Nombre del archivo:");
+    if(!name)return;
+    const event=new Event("change");
+    alert("Crea el archivo desde el editor después de subirlo.");
+  });
+ }
+});
+</script>
+
+<style>
+.btn-clear-all{
+    display:none !important;
+}
+</style>
+
+<style>
+/* Nueva interfaz moderna */
+body{
+    background:linear-gradient(135deg,#0f172a,#1e293b,#111827)!important;
+}
+.terminal-header,.modal,.bulk-bar{
+    backdrop-filter:blur(12px);
+    box-shadow:0 15px 40px rgba(0,0,0,.35);
+}
+.brand-mark{
+    border-radius:14px!important;
+    background:linear-gradient(135deg,#38bdf8,#2563eb)!important;
+    color:white!important;
+}
+.btn-scan{
+    border-radius:14px!important;
+    transition:.25s!important;
+}
+.btn-scan:hover{
+    transform:translateY(-3px) scale(1.03);
+}
+.search-wrap{
+    border-radius:14px!important;
+}
+.file-row{
+    transition:.25s;
+    border-radius:12px;
+    padding-left:10px!important;
+    padding-right:10px!important;
+}
+.file-row:hover{
+    transform:translateX(5px);
+    background:rgba(56,189,248,.12);
+}
+.icon-btn{
+    width:38px!important;
+    height:38px!important;
+    border-radius:12px!important;
+    font-size:18px;
+}
+.icon-btn.download::before{content:"📥";}
+.icon-btn.edit::before{content:"📝";}
+.icon-btn.delete::before{content:"🗑️";}
+.icon-btn.download{font-size:0}
+.icon-btn.edit{font-size:0}
+.icon-btn.delete{font-size:0}
+
+.file-tag{
+    border-radius:10px!important;
+}
+
+.dropzone{
+    transition:.3s;
+    cursor:pointer;
+}
+.dropzone:hover{
+    border-color:#38bdf8;
+    background:rgba(56,189,248,.1);
+}
+
+.toast{
+    border-radius:15px!important;
+}
+
+/* tarjetas estadísticas */
+.readout-item{
+    padding:12px;
+    background:rgba(255,255,255,.04);
+    border-radius:12px;
+}
+</style>
+
+<script>
+document.addEventListener("DOMContentLoaded",()=>{
+    // Animación de entrada de archivos
+    const observer=new MutationObserver(()=>{
+        document.querySelectorAll(".file-row").forEach(row=>{
+            row.style.animation="fadeIn .35s ease";
+        });
+    });
+    const list=document.getElementById("list-body");
+    if(list) observer.observe(list,{childList:true});
+
+    // Atajos de teclado
+    document.addEventListener("keydown",(e)=>{
+        if(e.ctrlKey && e.key==="u"){
+            e.preventDefault();
+            document.getElementById("file-input")?.click();
+        }
+    });
+});
+</script>
+
+<style>
+@keyframes fadeIn{
+from{opacity:0;transform:translateY(10px)}
+to{opacity:1;transform:none}
+}
+</style>
